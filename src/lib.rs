@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use reqwest;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
@@ -9,11 +10,17 @@ mod errors;
 pub use errors::{Error, Result};
 
 mod constant {
+    use lazy_static::lazy_static;
+    use regex::Regex;
+
     pub static UA: &str = concat!(
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ",
         "AppleWebKit/537.36 (KHTML, like Gecko) ",
         "Chrome/79.0.3945.117 Safari/537.36"
     );
+    lazy_static! {
+        pub static ref PIC_ID_REGEX: Regex = Regex::new("pic_ids=([^&]+)&").unwrap();
+    }
 }
 
 #[doc(hidden)]
@@ -51,21 +58,26 @@ mod response {
 }
 
 pub struct Client {
-    client: reqwest::Client,
+    inner_client: reqwest::Client,
 }
 
 impl Client {
-    pub fn new() -> Result<Self> {
-        let client = reqwest::ClientBuilder::new()
+    /// 返回一个已经匿名登陆的客户端
+    pub async fn new() -> Result<Self> {
+        let inner_client = reqwest::ClientBuilder::new()
             .user_agent(constant::UA)
             .cookie_store(true)
             .build()?;
 
-        Ok(Self { client })
+        let mut client = Self { inner_client };
+        // 完成匿名登录
+        client.authenticate().await?;
+
+        Ok(client)
     }
 
     /// 匿名登录
-    pub async fn authenticate(&mut self) -> Result<()> {
+    async fn authenticate(&mut self) -> Result<()> {
         let tid = self.get_tid().await?;
         self.get_cookies(tid).await?;
         log::info!("匿名登陆成功");
@@ -80,7 +92,7 @@ impl Client {
         });
         // 组建请求
         let request = self
-            .client
+            .inner_client
             .post(URL)
             .form(&data) // application/x-www-form-urlencoded
             .build()
@@ -90,7 +102,7 @@ impl Client {
             })?;
 
         // 发送请求
-        let resp = self.client.execute(request).await.or_else(|e| {
+        let resp = self.inner_client.execute(request).await.or_else(|e| {
             log::error!("Failed to post tid generation request: {}", e);
             Err(e)
         })?;
@@ -118,8 +130,8 @@ impl Client {
             "_rand": rand::random::<f64>()
         });
 
-        let request = self.client.get(URL).query(&query).build()?;
-        let resp = self.client.execute(request).await?;
+        let request = self.inner_client.get(URL).query(&query).build()?;
+        let resp = self.inner_client.execute(request).await?;
 
         // 读取 body，自动保存 cookie
         let body = resp.text().await?;
@@ -140,5 +152,82 @@ impl Client {
 
         let value: response::Api<T> = serde_json::from_str(body)?;
         value.result()
+    }
+
+    /// 获取微博链接中的全部图片 url
+    pub async fn get_pic_ids(&self, url: &str) -> Result<Vec<String>> {
+        let request = self.inner_client.get(url).build()?;
+        let resp = self.inner_client.execute(request).await?;
+        let html = resp.text().await?;
+
+        let regex = &constant::PIC_ID_REGEX;
+
+        let pic_ids = regex
+            .captures(&html)
+            .map(|cap| cap[1].split(",").map(|s| s.to_owned()).collect())
+            .unwrap_or_else(|| vec![]);
+
+        Ok(pic_ids)
+    }
+
+    /// 下载图片，返回二进制图片及其扩展名
+    pub async fn get_pic(&self, pic_id: &str) -> Result<(Bytes, String)> {
+        let url = format!("https://wx4.sinaimg.cn/large/{}.jpg", pic_id);
+        let request = self.inner_client.get(&url).build()?;
+        let resp = self.inner_client.execute(request).await?;
+
+        let content_type = resp
+            .headers()
+            .get("Content-Type")
+            .map(|v| v.to_str().unwrap().replace("image/", "").to_lowercase())
+            .unwrap_or_else(|| "jpg".to_owned());
+        let ext = match content_type.as_str() {
+            "jpeg" => "jpg",
+            "jpg" | "png" | "gif" | "bmp" | "webp" => &content_type,
+            _ => panic!("未知图片扩展名：{}", content_type),
+        };
+
+        let bytes = resp.bytes().await?;
+        Ok((bytes, ext.into()))
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    /// 测试匿名登录和拉取图片 id
+    #[tokio::test]
+    async fn test_integration() {
+        // 测试登录
+        let client = Client::new().await.unwrap();
+
+        // 测试获取图片
+        const URL: &str = "https://weibo.com/2656274875/JbTu3a9Td?filter=hot&root_comment_id=0";
+        let pic_ids = client.get_pic_ids(URL).await.unwrap();
+        println!("{:#?}", pic_ids);
+        assert_eq!(pic_ids.len(), 9);
+        assert_eq!(
+            pic_ids,
+            vec![
+                "9e5389bbly1ggw2ssj9gzj20u00k0dhs",
+                "9e5389bbly1ggw2ssjpv5j20u00jxacp",
+                "9e5389bbly1ggw2ssjl0gj20u0104goh",
+                "9e5389bbly1ggw2ssmxopj20u00kb0vg",
+                "9e5389bbly1ggw2ssjo2hj20lm0sitbi",
+                "9e5389bbly1ggw2sskebaj20u017un1o",
+                "9e5389bbly1ggw2sslo9hj20u00k0jsh",
+                "9e5389bbly1ggw2ssmeuwj20u011qad3",
+                "9e5389bbly1ggw2ssnohnj20u0190wi7",
+            ]
+        );
+
+        // 测试下载图片
+        let (bytes, ext) = client
+            .get_pic("9e5389bbly1ggw2ssj9gzj20u00k0dhs")
+            .await
+            .unwrap();
+        assert_eq!(ext, "jpg");
+        assert_eq!(bytes.len(), 82_803);
     }
 }

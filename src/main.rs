@@ -8,7 +8,6 @@ fn init() {
 async fn main() -> weibo::Result<()> {
     init();
 
-    let mut client = weibo::Client::new()?;
-    client.authenticate().await?;
+    let mut _client = weibo::Client::new().await?;
     Ok(())
 }

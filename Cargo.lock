@@ -1250,10 +1250,13 @@ dependencies = [
 name = "weibo"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "env_logger",
  "failure",
+ "lazy_static",
  "log",
  "rand",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
