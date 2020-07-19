@@ -5,6 +5,9 @@ pub enum Error {
 
     #[fail(display = "Json error: {}", _0)]
     Json(#[fail(cause)] serde_json::Error),
+
+    #[fail(display = "Api error: {}", _0)]
+    Api(String),
 }
 
 impl From<reqwest::Error> for Error {

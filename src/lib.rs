@@ -1,4 +1,5 @@
 use reqwest;
+use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
 #[macro_use]
@@ -15,6 +16,40 @@ mod constant {
     );
 }
 
+#[doc(hidden)]
+mod response {
+    use crate::{Error, Result};
+    use serde::Deserialize;
+    #[derive(Debug, Deserialize)]
+    pub struct Api<T> {
+        pub msg: String,
+        pub retcode: i64,
+        pub data: T,
+    }
+
+    impl<T> Api<T> {
+        pub fn result(self) -> Result<T> {
+            if self.retcode != 20_000_000 {
+                Err(Error::Api(self.msg))
+            } else {
+                Ok(self.data)
+            }
+        }
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct GenVisitor {
+        pub new_tid: bool,
+        pub tid: String,
+    }
+
+    #[derive(Debug, Deserialize)]
+    pub struct Visitor {
+        pub sub: String,
+        pub subp: String,
+    }
+}
+
 pub struct Client {
     client: reqwest::Client,
 }
@@ -23,15 +58,16 @@ impl Client {
     pub fn new() -> Result<Self> {
         let client = reqwest::ClientBuilder::new()
             .user_agent(constant::UA)
+            .cookie_store(true)
             .build()?;
 
         Ok(Self { client })
     }
 
+    /// 匿名登录
     pub async fn authenticate(&mut self) -> Result<()> {
         let tid = self.get_tid().await?;
-        // let cookies = self.get_cookies(tid);
-        // TODO: set cookies
+        self.get_cookies(tid).await?;
         log::info!("匿名登陆成功");
         Ok(())
     }
@@ -42,6 +78,7 @@ impl Client {
         let data: Value = json!({
             "cb": "cb"
         });
+        // 组建请求
         let request = self
             .client
             .post(URL)
@@ -52,27 +89,56 @@ impl Client {
                 Err(e)
             })?;
 
-        let response = self.client.execute(request).await.or_else(|e| {
+        // 发送请求
+        let resp = self.client.execute(request).await.or_else(|e| {
             log::error!("Failed to post tid generation request: {}", e);
             Err(e)
         })?;
 
-        let body = response.text().await?;
-        let data = Self::parse_body(body)?;
+        // 解析
+        let body = resp.text().await?;
+        let data: response::GenVisitor = Self::parse_api_body(body)?;
 
         log::debug!("data: {:?}", data);
 
-        Ok("tid".into())
+        Ok(data.tid)
     }
 
-    /// 解析 jsonp 返回为 serde_json::Value
-    fn parse_body(body: String) -> Result<Value> {
+    async fn get_cookies(&self, tid: String) -> Result<()> {
+        const URL: &str = "https://passport.weibo.com/visitor/visitor";
+
+        let query = json!({
+            "a": "incarnate",
+            "t": tid,
+            "w": 2,
+            "c": "095",
+            "gc": "",
+            "cb": "cb",
+            "from": "weibo",
+            "_rand": rand::random::<f64>()
+        });
+
+        let request = self.client.get(URL).query(&query).build()?;
+        let resp = self.client.execute(request).await?;
+
+        // 读取 body，自动保存 cookie
+        let body = resp.text().await?;
+        let _data: response::Visitor = Self::parse_api_body(body)?;
+
+        Ok(())
+    }
+
+    /// 解析 jsonp 返回为 T，内部处理 retcode
+    fn parse_api_body<T>(body: String) -> Result<T>
+    where
+        T: DeserializeOwned,
+    {
         // body: window.cb && cb(<json>);
         let body = body
             .trim_start_matches("window.cb && cb(")
             .trim_end_matches(");");
 
-        let value = serde_json::from_str(body)?;
-        Ok(value)
+        let value: response::Api<T> = serde_json::from_str(body)?;
+        value.result()
     }
 }

@@ -13,8 +13,10 @@ env_logger = "0.7.1"
 # error handling
 failure = "0.1.8"
 # network
-reqwest = { version = "0.10.6", features = ["json"] }
+reqwest = { version = "0.10.6", features = ["json", "cookies"] }
 tokio = { version = "0.2.21", features = ["macros"] }
 # serde
-serde = "1.0.114"
+serde = { version = "1.0.114", features = ["derive"] }
 serde_json = "1.0.56"
+# random
+rand = "0.7.3"
