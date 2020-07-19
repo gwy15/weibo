@@ -20,18 +20,24 @@ fn bytes_to_mib(bytes: usize) -> f64 {
 async fn main() -> Result<()> {
     init();
 
+    // IO 交互
+    print!("微博链接: ");
+    std::io::stdout().flush().unwrap();
+    let mut url = String::new();
+    std::io::stdin().read_line(&mut url).unwrap();
+    let url = url.trim();
+
     // 创建文件夹
     let root = Path::new("downloads");
     if !root.exists() {
         std::fs::create_dir(&root).unwrap();
     }
-
+    // 匿名登录
     let client = Client::new().await?;
 
-    let url = "https://weibo.com/2656274875/JbTu3a9Td?filter=hot&root_comment_id=0";
-    // 获取图片 URL
+    // 获取全部图片 ID
     let pic_ids = client.get_pic_ids(url).await?;
-    // 并发下载
+    // 并发下载图片
     let results = stream::iter(pic_ids)
         .map(|pic_id| {
             let client = &client;
@@ -40,7 +46,7 @@ async fn main() -> Result<()> {
                 let path = root.join(format!("{}.{}", pic_id, ext));
                 let written = File::create(path).unwrap().write(&bytes).unwrap();
                 log::info!(
-                    "文件 {}.{} 写入 {:.2} MiB",
+                    "文件 [{}.{}] 写入 {:.2} MiB",
                     pic_id,
                     ext,
                     bytes_to_mib(written)
@@ -54,6 +60,7 @@ async fn main() -> Result<()> {
         .into_iter()
         .collect::<Result<Vec<_>>>()?;
 
+    // 总结
     let size_in_bytes = results.into_iter().sum::<usize>();
     log::info!("总共文件大小: {:.2} MiB", bytes_to_mib(size_in_bytes));
 
